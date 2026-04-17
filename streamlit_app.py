@@ -60,7 +60,6 @@ for _key, _value in _DEFAULTS.items():
 
 
 def _dedupe_columns(df):
-    """Yinelenen kolon isimlerini _1, _2 ekleyerek benzersizlestirir."""
     cols = list(df.columns)
     seen = {}
     new_cols = []
@@ -119,7 +118,6 @@ def freq_label(f):
 
 
 def _column_as_series(df, col):
-    """Return a 1-D Series for col, even if df has duplicate column names."""
     obj = df[col]
     if isinstance(obj, pd.DataFrame):
         obj = obj.iloc[:, 0]
@@ -618,7 +616,7 @@ with tab_train:
             st.markdown(
                 "- **Naive** — En son değeri tekrarlar. Diğer modellerin kıyaslanacağı referans model.\n"
                 "- **SARIMA** — Klasik istatistiksel model; trend ve sezonsallığı yakalar.\n"
-                "- **Prophet** — Facebook tarafından geliştirilen model; resmi tatilleri, çoklu sezonsallığı destekler.\n"
+                "- **Prophet** — Resmi tatilleri, çoklu sezonsallığı destekler.\n"
                 "- **XGBoost** — Gradient boosting tabanlı makine öğrenmesi; geçmiş verilerden feature üretip öğrenir."
             )
 
@@ -745,22 +743,138 @@ with tab_results:
         st.dataframe(forecast_df, use_container_width=True, hide_index=True)
 
         st.markdown("#### What-If Senaryo Simülasyonu")
-        st.caption("Tahmini belli bir oranla artırıp/azaltarak farklı senaryoları inceleyin.")
-        change_pct = st.slider("Senaryo etkisi (%)", -50, 50, 0, step=5)
-        if change_pct != 0:
-            scen = r["forecast"] * (1 + change_pct / 100)
+        st.caption(
+            "Karar destek modu: Kampanya, özel gün, trend değişimi gibi "
+            "varsayımları ekleyerek tahmini yeniden şekillendirin."
+        )
+
+        if "scenarios" not in st.session_state:
+            st.session_state["scenarios"] = []
+
+        scen_tabs = st.tabs(["Kampanya / Özel Gün", "Genel Etki (Tüm Dönem)", "Trend Değişimi"])
+
+        with scen_tabs[0]:
+            st.caption(
+                "Belirli tarih aralıklarında tahmini belirttiğiniz oranda artırıp/azaltır. "
+                "Örn: _'15 Kasım–30 Kasım arası kampanya → satış %25 artar.'_"
+            )
+            forecast_min = r["forecast"].index.min().date()
+            forecast_max = r["forecast"].index.max().date()
+
+            with st.form("scen_add_form", clear_on_submit=True):
+                fc1, fc2, fc3, fc4, fc5 = st.columns([2, 2, 2, 1, 1])
+                with fc1:
+                    scen_name = st.text_input("Senaryo Adı", value="Kampanya")
+                with fc2:
+                    scen_start = st.date_input(
+                        "Başlangıç", value=forecast_min,
+                        min_value=forecast_min, max_value=forecast_max,
+                    )
+                with fc3:
+                    scen_end = st.date_input(
+                        "Bitiş", value=forecast_max,
+                        min_value=forecast_min, max_value=forecast_max,
+                    )
+                with fc4:
+                    scen_impact = st.number_input("Etki %", value=20, step=5)
+                with fc5:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    add_clicked = st.form_submit_button("Ekle")
+                if add_clicked:
+                    st.session_state["scenarios"].append({
+                        "ad": scen_name,
+                        "baslangic": str(scen_start),
+                        "bitis": str(scen_end),
+                        "etki": int(scen_impact),
+                    })
+                    safe_rerun()
+
+            if st.session_state["scenarios"]:
+                scen_df_display = pd.DataFrame(st.session_state["scenarios"]).rename(columns={
+                    "ad": "Ad",
+                    "baslangic": "Başlangıç",
+                    "bitis": "Bitiş",
+                    "etki": "Etki (%)",
+                })
+                st.dataframe(scen_df_display, use_container_width=True, hide_index=True)
+                cc1, cc2 = st.columns([1, 5])
+                with cc1:
+                    if st.button("Tümünü Sil"):
+                        st.session_state["scenarios"] = []
+                        safe_rerun()
+
+        with scen_tabs[1]:
+            st.caption("Tüm tahmin ufkuna tek oranda sabit etki uygular.")
+            flat_pct = st.slider("Genel etki (%)", -50, 50, 0, step=5)
+
+        with scen_tabs[2]:
+            st.caption(
+                "Ufkun sonuna kadar lineer olarak uygulanan trend etkisi. "
+                "Örn: +%20 → son dönem tahmini %20 daha yüksek (ara dönemler oransal)."
+            )
+            trend_pct = st.slider("Trend değişimi (%)", -50, 50, 0, step=5)
+
+        scenario_forecast = r["forecast"].copy().astype(float)
+
+        for scen in st.session_state["scenarios"]:
+            start = pd.Timestamp(scen["baslangic"])
+            end = pd.Timestamp(scen["bitis"])
+            mask = (scenario_forecast.index >= start) & (scenario_forecast.index <= end)
+            scenario_forecast.loc[mask] *= 1 + scen["etki"] / 100
+
+        if flat_pct != 0:
+            scenario_forecast *= 1 + flat_pct / 100
+
+        if trend_pct != 0 and len(scenario_forecast) > 0:
+            multipliers = np.linspace(1.0, 1 + trend_pct / 100, len(scenario_forecast))
+            scenario_forecast = scenario_forecast * multipliers
+
+        has_scenario = (
+            len(st.session_state["scenarios"]) > 0 or flat_pct != 0 or trend_pct != 0
+        )
+
+        if has_scenario:
             fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=series.index, y=series.values, name="Geçmiş", line=dict(color="#2c3e50")))
+            fig2.add_trace(go.Scatter(
+                x=series.index, y=series.values,
+                name="Geçmiş", line=dict(color="#2c3e50", width=2),
+            ))
             fig2.add_trace(go.Scatter(
                 x=r["forecast"].index, y=r["forecast"].values,
-                name="Baz Tahmin", line=dict(color="#3498db", dash="dash"),
+                name="Baz Tahmin", line=dict(color="#3498db", width=2, dash="dash"),
             ))
             fig2.add_trace(go.Scatter(
-                x=scen.index, y=scen.values,
-                name=f"Senaryo (%{change_pct:+d})", line=dict(color="#e67e22", width=3),
+                x=scenario_forecast.index, y=scenario_forecast.values,
+                name="Senaryolu Tahmin", line=dict(color="#e67e22", width=3),
             ))
-            fig2.update_layout(height=380, hovermode="x unified", xaxis_title="Tarih", yaxis_title=target_col)
+            for scen in st.session_state["scenarios"]:
+                fig2.add_vrect(
+                    x0=pd.Timestamp(scen["baslangic"]),
+                    x1=pd.Timestamp(scen["bitis"]),
+                    fillcolor="#e67e22", opacity=0.12, line_width=0,
+                    annotation_text=scen["ad"], annotation_position="top left",
+                )
+            fig2.update_layout(
+                height=420, hovermode="x unified",
+                xaxis_title="Tarih", yaxis_title=target_col,
+                legend=dict(orientation="h", y=1.1),
+            )
             st.plotly_chart(fig2, use_container_width=True)
+
+            baz_toplam = float(r["forecast"].sum())
+            senaryo_toplam = float(scenario_forecast.sum())
+            delta = senaryo_toplam - baz_toplam
+            delta_pct = (delta / baz_toplam * 100) if baz_toplam else 0
+
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric("Baz Tahmin Toplamı", f"{baz_toplam:,.0f}")
+            mc2.metric("Senaryolu Toplam", f"{senaryo_toplam:,.0f}", f"{delta:+,.0f}")
+            mc3.metric("Değişim", f"{delta_pct:+.2f}%")
+        else:
+            st.info(
+                "Henüz senaryo tanımlanmadı. Kampanya ekleyin, genel etki ya da trend "
+                "değişimi tanımlayın; grafik burada görünecek."
+            )
 
         st.markdown("#### Dışa Aktarma")
         buffer = io.BytesIO()
@@ -772,6 +886,18 @@ with tab_results:
                 pd.DataFrame([qr]).T.reset_index().rename(
                     columns={"index": "Metrik", 0: "Değer"}
                 ).to_excel(w, sheet_name="Veri Kalite Raporu", index=False)
+            if has_scenario:
+                scen_export = pd.DataFrame({
+                    "Tarih": scenario_forecast.index,
+                    "Baz Tahmin": r["forecast"].values.round(2),
+                    "Senaryolu Tahmin": scenario_forecast.values.round(2),
+                    "Fark": (scenario_forecast.values - r["forecast"].values).round(2),
+                })
+                scen_export.to_excel(w, sheet_name="Senaryo Tahminleri", index=False)
+                if st.session_state["scenarios"]:
+                    pd.DataFrame(st.session_state["scenarios"]).to_excel(
+                        w, sheet_name="Senaryo Tanimlari", index=False
+                    )
             summary = pd.DataFrame([{
                 "Zaman Damgasi": datetime.now().isoformat(timespec="seconds"),
                 "En Iyi Model": best,
