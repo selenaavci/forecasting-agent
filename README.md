@@ -1,10 +1,13 @@
 📈 Forecasting Agent
+
 Overview
+
 Forecasting Agent, kullanıcıların kendi veri setleri üzerinden zaman serisi tahminleri (time series forecasting) yapabilmesini sağlayan, teknik bilgi gerektirmeyen, uçtan uca bir tahminleme çözümüdür.
 Bu agent; veri yükleme, otomatik veri analizi, çoklu model karşılaştırması, tahmin üretimi ve sonuçların görselleştirilmesi süreçlerini tek bir arayüz üzerinden yönetir.
 AI Hub içerisinde, veri odaklı karar alma süreçlerini hızlandırmak ve iş birimlerini self-service AI ile güçlendirmek amacıyla geliştirilmiştir.
 
 🎯 Project Purpose
+
 Kullanıcıların geçmiş verilerden geleceğe yönelik tahminler üretmesini sağlamak
 Tahmin süreçlerini teknik ekip bağımlılığı olmadan erişilebilir hale getirmek
 Farklı forecasting modellerini otomatik olarak karşılaştırmak
@@ -12,6 +15,7 @@ Belirsizlik aralıkları ile birlikte güvenilir tahminler sunmak
 İş kararlarını veri odaklı hale getirmek
 
 👤 Target Users
+
 İş birimleri (satış, pazarlama, operasyon, finans)
 Veri analistleri
 Teknik olmayan kullanıcılar
