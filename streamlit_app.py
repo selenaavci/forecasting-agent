@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import io
 import warnings
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -9,91 +12,55 @@ import streamlit as st
 
 warnings.filterwarnings("ignore")
 
+
+def safe_rerun() -> None:
+    if hasattr(st, "rerun"):
+        st.rerun()
+    elif hasattr(st, "experimental_rerun"):
+        st.experimental_rerun()
+
+
 st.set_page_config(
-    page_title="Forecasting Agent | AI Hub",
-    page_icon="📈",
+    page_title="Forecasting Agent",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.markdown(
-    """
-    <style>
-    .main-header {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        padding: 1.5rem; border-radius: 12px; color: white; margin-bottom: 1rem;
-    }
-    .step-box {
-        background: #f8f9fa; padding: 1rem; border-radius: 8px;
-        border-left: 4px solid #667eea; margin-bottom: 1rem;
-    }
-    .success-box { background: #d4edda; padding: 0.75rem; border-radius: 6px; color: #155724; }
-    .warn-box { background: #fff3cd; padding: 0.75rem; border-radius: 6px; color: #856404; }
-    .err-box { background: #f8d7da; padding: 0.75rem; border-radius: 6px; color: #721c24; }
-    </style>
-    <div class="main-header">
-        <h1>Forecasting Agent</h1>
-        <p>Verinizi yükleyin, birkaç tıkla geleceğe bakın. Teknik bilgi gerekmez.</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
+st.title("Forecasting Agent")
+st.caption(
+    "Veri setinizi yükleyin, tarih ve hedef kolonunu seçin, birden fazla "
+    "zaman serisi modelini otomatik olarak çalıştırıp karşılaştırın."
+)
+
+st.warning(
+    "**Bu uygulama bir hızlı tahminleme / keşif aracıdır.** "
+    "Üretilen tahminler iş kararlarına destek niteliğindedir; "
+    "**doğrudan operasyonel karar verme için tek başına kullanılmamalıdır.** "
+    "Tahmin sonuçları; veri kalitesi, kampanya/özel gün etkileri ve dış "
+    "faktörler dikkate alınarak iş birimleriyle birlikte değerlendirilmelidir."
 )
 
 
-def init_state():
-    defaults = {
-        "df_raw": None,
-        "df_clean": None,
-        "date_col": None,
-        "target_col": None,
-        "freq": None,
-        "quality_report": None,
-        "forecast_results": None,
-        "best_model": None,
-        "step": 1,
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-
-
-init_state()
-
-
-with st.sidebar:
-    st.markdown("### Adımlar")
-    steps = [
-        "1. Veri Yükle",
-        "2. Kolon Seçimi",
-        "3. Veri Kalitesi",
-        "4. Tahmin Ayarları",
-        "5. Model Çalıştır",
-        "6. Sonuçlar",
-    ]
-    selected_step = st.radio(
-        "Hangi adımdasınız?", steps, index=st.session_state["step"] - 1
-    )
-    st.session_state["step"] = steps.index(selected_step) + 1
-
-    st.markdown("---")
-    st.markdown("### Nasıl Çalışır?")
-    st.info(
-        "1. Excel/CSV dosyanızı yükleyin\n"
-        "2. Tarih ve tahmin edeceğiniz kolonu seçin\n"
-        "3. Veri kalite raporunu inceleyin\n"
-        "4. Kaç dönem ileri tahmin istediğinizi belirtin\n"
-        "5. Tahminleri görüntüleyin ve Excel'e aktarın"
-    )
-
-    st.markdown("---")
-    if st.button("Sıfırla", use_container_width=True):
-        for k in list(st.session_state.keys()):
-            del st.session_state[k]
-        st.rerun()
+_DEFAULTS = {
+    "df": None,
+    "file_name": None,
+    "date_col": None,
+    "target_col": None,
+    "freq": None,
+    "horizon": 12,
+    "selected_models": ["Naive", "SARIMA", "Prophet", "XGBoost"],
+    "holidays_country": "TR",
+    "quality_report": None,
+    "forecast_results": None,
+    "best_model": None,
+    "series": None,
+}
+for _key, _value in _DEFAULTS.items():
+    st.session_state.setdefault(_key, _value)
 
 
 @st.cache_data(show_spinner=False)
-def load_file(uploaded_file):
+def load_dataframe(uploaded_file):
     name = uploaded_file.name.lower()
     if name.endswith(".csv"):
         try:
@@ -101,18 +68,16 @@ def load_file(uploaded_file):
         except Exception:
             uploaded_file.seek(0)
             return pd.read_csv(uploaded_file, sep=";")
-    elif name.endswith((".xlsx", ".xls")):
+    if name.endswith((".xlsx", ".xls")):
         return pd.read_excel(uploaded_file)
-    else:
-        return None
+    return None
 
 
 def detect_frequency(dates):
     dates = pd.to_datetime(dates).sort_values().drop_duplicates()
     if len(dates) < 2:
         return "D"
-    diffs = dates.diff().dropna()
-    median_days = diffs.dt.days.median()
+    median_days = dates.diff().dropna().dt.days.median()
     if median_days <= 1:
         return "D"
     if median_days <= 8:
@@ -164,11 +129,14 @@ def quality_check(df, date_col, target_col):
         report["aykiri_deger"] = 0
 
     if n < 24:
-        report["yeterlilik"] = "Düşük - Veri çok kısa, sonuçlar güvenilir olmayabilir."
+        report["yeterlilik"] = "Düşük"
+        report["yeterlilik_aciklama"] = "Veri çok kısa, sonuçlar güvenilir olmayabilir."
     elif n < 60:
-        report["yeterlilik"] = "Orta - Tahmin yapılabilir ancak uzun vadede risk var."
+        report["yeterlilik"] = "Orta"
+        report["yeterlilik_aciklama"] = "Tahmin yapılabilir ancak uzun vadede risk var."
     else:
-        report["yeterlilik"] = "Yeterli - Güvenilir tahmin için yeterli veri var."
+        report["yeterlilik"] = "Yeterli"
+        report["yeterlilik_aciklama"] = "Güvenilir tahmin için yeterli veri var."
     return report
 
 
@@ -201,27 +169,24 @@ def make_features(series):
 def calc_metrics(actual, pred):
     actual = np.array(actual, dtype=float)
     pred = np.array(pred, dtype=float)
-    mae = np.mean(np.abs(actual - pred))
-    rmse = np.sqrt(np.mean((actual - pred) ** 2))
+    mae = float(np.mean(np.abs(actual - pred)))
+    rmse = float(np.sqrt(np.mean((actual - pred) ** 2)))
     mask = actual != 0
     mape = (
-        np.mean(np.abs((actual[mask] - pred[mask]) / actual[mask])) * 100
+        float(np.mean(np.abs((actual[mask] - pred[mask]) / actual[mask])) * 100)
         if mask.any()
-        else np.nan
+        else float("nan")
     )
     return {"MAE": mae, "RMSE": rmse, "MAPE": mape}
 
 
 def model_naive(train, horizon):
     last = train.iloc[-1]
-    future = pd.date_range(
-        train.index[-1] + (train.index[-1] - train.index[-2]), periods=horizon, freq=train.index.freq
-    )
+    step = train.index[-1] - train.index[-2]
+    future = pd.date_range(train.index[-1] + step, periods=horizon, freq=train.index.freq)
     pred = pd.Series([last] * horizon, index=future)
     std = train.diff().std()
-    lower = pred - 1.96 * std
-    upper = pred + 1.96 * std
-    return pred, lower, upper
+    return pred, pred - 1.96 * std, pred + 1.96 * std
 
 
 def model_sarima(train, horizon, seasonal=12):
@@ -237,9 +202,8 @@ def model_sarima(train, horizon, seasonal=12):
         )
         fit = m.fit(disp=False)
         f = fit.get_forecast(steps=horizon)
-        pred = f.predicted_mean
         ci = f.conf_int()
-        return pred, ci.iloc[:, 0], ci.iloc[:, 1]
+        return f.predicted_mean, ci.iloc[:, 0], ci.iloc[:, 1]
     except Exception as e:
         st.warning(f"SARIMA çalıştırılamadı: {e}")
         return None, None, None
@@ -280,18 +244,16 @@ def model_xgboost(train, horizon):
         feats = make_features(train).dropna()
         X = feats.drop(columns=["y"])
         y = feats["y"]
-        model = XGBRegressor(
-            n_estimators=200, max_depth=4, learning_rate=0.05, verbosity=0
-        )
+        model = XGBRegressor(n_estimators=200, max_depth=4, learning_rate=0.05, verbosity=0)
         model.fit(X, y)
 
         history = train.copy()
         preds = []
-        freq = train.index.freq
-        for i in range(horizon):
-            next_dt = history.index[-1] + (history.index[-1] - history.index[-2])
-            if freq is not None:
-                next_dt = history.index[-1] + pd.tseries.frequencies.to_offset(freq)
+        for _ in range(horizon):
+            if train.index.freq is not None:
+                next_dt = history.index[-1] + pd.tseries.frequencies.to_offset(train.index.freq)
+            else:
+                next_dt = history.index[-1] + (history.index[-1] - history.index[-2])
             row = {
                 "ay": next_dt.month,
                 "gun": next_dt.day,
@@ -312,9 +274,7 @@ def model_xgboost(train, horizon):
         vals = [v for _, v in preds]
         pred = pd.Series(vals, index=idx)
         resid_std = (train - train.rolling(3).mean()).std()
-        lower = pred - 1.96 * resid_std
-        upper = pred + 1.96 * resid_std
-        return pred, lower, upper
+        return pred, pred - 1.96 * resid_std, pred + 1.96 * resid_std
     except Exception as e:
         st.warning(f"XGBoost çalıştırılamadı: {e}")
         return None, None, None
@@ -327,25 +287,22 @@ def run_all_models(series, horizon, freq, holidays_country, selected_models):
     test = series.iloc[split:]
 
     seasonal_period = {"D": 7, "W": 52, "MS": 12, "QS": 4, "YS": 1}.get(freq, 12)
-
     results = {}
 
-    def evaluate(name, fn, *args, **kwargs):
-        pred, lo, up = fn(train, len(test), *args, **kwargs)
+    def evaluate(name, fn, *args):
+        pred, lo, up = fn(train, len(test), *args)
         if pred is None:
             return
         if len(test) > 0:
-            pred_t = pred.iloc[: len(test)].values
-            m = calc_metrics(test.values, pred_t)
+            m = calc_metrics(test.values, pred.iloc[: len(test)].values)
         else:
-            m = {"MAE": np.nan, "RMSE": np.nan, "MAPE": np.nan}
-        full_pred, full_lo, full_up = fn(series, horizon, *args, **kwargs)
+            m = {"MAE": float("nan"), "RMSE": float("nan"), "MAPE": float("nan")}
+        full_pred, full_lo, full_up = fn(series, horizon, *args)
         results[name] = {
             "metrics": m,
             "forecast": full_pred,
             "lower": full_lo,
             "upper": full_up,
-            "validation_pred": pred,
         }
 
     if "Naive" in selected_models:
@@ -360,368 +317,444 @@ def run_all_models(series, horizon, freq, holidays_country, selected_models):
     return results, test
 
 
-step = st.session_state["step"]
+with st.sidebar:
+    st.header("Dosya Yükleme")
+    uploaded_file = st.file_uploader(
+        "CSV veya Excel dosyası yükleyin",
+        type=["csv", "xlsx", "xls"],
+        help="Dosyada tarih ve tahmin edilecek sayı kolonları olmalı.",
+    )
 
-if step == 1:
-    st.markdown("## 1. Veri Dosyanızı Yükleyin")
+    st.divider()
     st.markdown(
-        '<div class="step-box">Excel (<b>.xlsx</b>) veya CSV (<b>.csv</b>) dosyanızı sürükleyip bırakabilirsiniz. '
-        "Dosyada <b>tarih</b> ve <b>tahmin etmek istediğiniz sayı</b> (örneğin satış adedi, ciro, stok) olmalı.</div>",
-        unsafe_allow_html=True,
+        "**Desteklenen formatlar:** CSV, XLSX, XLS\n\n"
+        "**Özellikler:**\n"
+        "- Otomatik veri sıklığı tespiti (günlük/haftalık/aylık)\n"
+        "- Eksik değer ve aykırı değer analizi\n"
+        "- Çoklu model karşılaştırması (Naive, SARIMA, Prophet, XGBoost)\n"
+        "- Ülkeye özel resmi tatil takvimi\n"
+        "- Güven aralığı (confidence interval)\n"
+        "- What-if senaryo simülasyonu\n"
+        "- Excel rapor çıktısı"
     )
 
-    uploaded = st.file_uploader(
-        "Dosya seçin", type=["csv", "xlsx", "xls"], help="Maksimum 200MB"
-    )
+    st.divider()
+    if st.button("Örnek veri ile dene", use_container_width=True):
+        dates = pd.date_range("2022-01-01", periods=48, freq="MS")
+        trend = np.linspace(120000, 210000, 48)
+        season = 20000 * np.sin(2 * np.pi * np.arange(48) / 12)
+        noise = np.random.RandomState(42).normal(0, 6000, 48)
+        sample = pd.DataFrame(
+            {"Tarih": dates, "Satis_Tutari_TL": (trend + season + noise).round(0).astype(int)}
+        )
+        st.session_state["df"] = sample
+        st.session_state["file_name"] = "ornek_veri.csv"
+        st.session_state["forecast_results"] = None
+        safe_rerun()
 
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        if st.button("Örnek veri ile dene", use_container_width=True):
-            dates = pd.date_range("2021-01-01", periods=48, freq="MS")
-            trend = np.linspace(100, 200, 48)
-            season = 20 * np.sin(2 * np.pi * np.arange(48) / 12)
-            noise = np.random.RandomState(42).normal(0, 8, 48)
-            sample = pd.DataFrame(
-                {"Tarih": dates, "Satis": (trend + season + noise).round(2)}
-            )
-            st.session_state["df_raw"] = sample
-            st.success("Örnek veri yüklendi. Bir sonraki adıma geçebilirsiniz.")
-
-    if uploaded is not None:
-        df = load_file(uploaded)
-        if df is None or df.empty:
-            st.error("Dosya okunamadı. Lütfen Excel veya CSV formatında olduğundan emin olun.")
-        else:
-            st.session_state["df_raw"] = df
-            st.success(f"Dosya başarıyla yüklendi: **{len(df)} satır, {len(df.columns)} kolon**")
-
-    if st.session_state["df_raw"] is not None:
-        st.markdown("### Verinin İlk 10 Satırı")
-        st.dataframe(st.session_state["df_raw"].head(10), use_container_width=True)
-        if st.button("Devam Et: Kolon Seçimi", type="primary", use_container_width=True):
-            st.session_state["step"] = 2
-            st.rerun()
+    if st.button("Oturumu Sıfırla", use_container_width=True):
+        for _k in list(st.session_state.keys()):
+            del st.session_state[_k]
+        safe_rerun()
 
 
-elif step == 2:
-    st.markdown("## 2. Kolonları Seçin")
-    df = st.session_state["df_raw"]
-    if df is None:
-        st.warning("Önce veri yüklemeniz gerekir. Lütfen 1. adıma dönün.")
+if uploaded_file is not None:
+    try:
+        if st.session_state.get("file_name") != uploaded_file.name:
+            with st.spinner("Veri okunuyor..."):
+                df_new = load_dataframe(uploaded_file)
+            if df_new is None or df_new.empty:
+                st.error("Dosya okunamadı veya boş.")
+                st.stop()
+            st.session_state["df"] = df_new
+            st.session_state["file_name"] = uploaded_file.name
+            st.session_state["forecast_results"] = None
+            st.session_state["date_col"] = None
+            st.session_state["target_col"] = None
+    except Exception as exc:
+        st.error(f"Dosya okunamadı: {exc}")
         st.stop()
 
-    st.markdown(
-        '<div class="step-box"><b>Tarih Kolonu:</b> Verinizde tarihlerin tutulduğu kolon (örn. <i>Tarih, Date, Month</i>).<br>'
-        "<b>Hedef Kolon:</b> Tahmin etmek istediğiniz sayı kolonu (örn. <i>Satış, Ciro, Stok</i>).</div>",
-        unsafe_allow_html=True,
-    )
 
+df = st.session_state.get("df")
+
+if df is None:
+    st.info("Başlamak için kenar çubuğundan bir dosya yükleyin veya örnek veriyi deneyin.")
+    st.stop()
+
+
+tab_preview, tab_profile, tab_setup, tab_train, tab_results = st.tabs(
+    [
+        "Veri Önizleme",
+        "Veri Profili",
+        "Tahmin Tanımı",
+        "Model Eğitimi",
+        "Sonuçlar",
+    ]
+)
+
+
+with tab_preview:
+    st.subheader("Veri Seti Önizleme")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Satır Sayısı", f"{len(df):,}")
+    c2.metric("Sütun Sayısı", len(df.columns))
+    c3.metric("Eksik Değer", f"{int(df.isna().sum().sum()):,}")
+    c4.metric("Numerik Sütun", df.select_dtypes(include="number").shape[1])
+
+    st.dataframe(df.head(100), use_container_width=True, height=400)
+
+    with st.expander("Sütun Bilgileri"):
+        rows = []
+        for col in df.columns:
+            samples = df[col].dropna()
+            rows.append({
+                "Sütun": col,
+                "Veri Tipi": str(df[col].dtype),
+                "Benzersiz Değer": int(df[col].nunique(dropna=True)),
+                "Eksik Değer": int(df[col].isna().sum()),
+                "Örnek Değer": str(samples.iloc[0]) if len(samples) > 0 else "-",
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+with tab_profile:
+    st.subheader("Veri Profili")
+
+    num_df = df.select_dtypes(include="number")
+    if not num_df.empty:
+        st.markdown("#### Numerik Sütun İstatistikleri")
+        st.dataframe(num_df.describe().T, use_container_width=True)
+
+    missing = df.isna().sum()
+    missing = missing[missing > 0]
+    if not missing.empty:
+        st.markdown("#### Eksik Değerler")
+        miss_df = pd.DataFrame(
+            {"Adet": missing.values, "Oran (%)": (missing.values / len(df) * 100).round(2)},
+            index=missing.index,
+        )
+        miss_df.index.name = "Sütun"
+        st.dataframe(miss_df, use_container_width=True)
+    else:
+        st.success("Eksik değer bulunmuyor.")
+
+    date_col = st.session_state.get("date_col")
+    target_col = st.session_state.get("target_col")
+
+    if date_col and target_col:
+        st.markdown("#### Zaman Serisi Kalite Raporu")
+        st.caption(
+            "Tahmin Tanımı sekmesinde seçilen tarih ve hedef kolonu üzerinden "
+            "zaman serisine özel kalite analizi."
+        )
+        report = quality_check(df, date_col, target_col)
+        st.session_state["quality_report"] = report
+
+        qc1, qc2, qc3, qc4 = st.columns(4)
+        qc1.metric("Satır Sayısı", report["satir_sayisi"])
+        qc2.metric("Eksik Hedef", report["eksik_hedef"])
+        qc3.metric("Eksik Dönem", report["eksik_donem"])
+        qc4.metric("Aykırı Değer", report["aykiri_deger"])
+
+        yet = report["yeterlilik"]
+        if yet == "Düşük":
+            st.error(f"**Veri Yeterliliği: {yet}** — {report['yeterlilik_aciklama']}")
+        elif yet == "Orta":
+            st.warning(f"**Veri Yeterliliği: {yet}** — {report['yeterlilik_aciklama']}")
+        else:
+            st.success(f"**Veri Yeterliliği: {yet}** — {report['yeterlilik_aciklama']}")
+
+        if report["duplicate_tarih"] > 0:
+            st.warning(
+                f"{report['duplicate_tarih']} adet tekrar eden tarih bulundu. "
+                "Model eğitilirken ortalaması alınacak."
+            )
+        if report["eksik_donem"] > 0:
+            st.warning(
+                f"{report['eksik_donem']} adet eksik dönem var. "
+                "Linear interpolation ile otomatik doldurulacak."
+            )
+
+        series = prepare_series(df, date_col, target_col, report["freq"])
+        st.session_state["series"] = series
+
+        st.markdown("#### Zaman Serisi Grafiği")
+        fig = px.line(
+            x=series.index, y=series.values,
+            labels={"x": "Tarih", "y": target_col},
+        )
+        fig.update_traces(line_color="#667eea", line_width=2)
+        fig.update_layout(height=380)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info(
+            "Zaman serisi kalite raporunu görmek için önce **Tahmin Tanımı** "
+            "sekmesinden tarih ve hedef kolonlarını seçin."
+        )
+
+
+with tab_setup:
+    st.subheader("Tahmin Tanımı")
+
+    st.markdown("#### Tarih Kolonu")
+    st.caption("Zaman bilgisi taşıyan kolonu seçin (örn. Tarih, Date, Month).")
     cols = df.columns.tolist()
     date_candidates = [c for c in cols if any(k in c.lower() for k in ["tarih", "date", "time", "ay", "month"])]
-    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-
-    c1, c2 = st.columns(2)
-    with c1:
-        date_col = st.selectbox(
-            "Tarih Kolonu",
-            cols,
-            index=cols.index(date_candidates[0]) if date_candidates else 0,
-        )
-    with c2:
-        target_col = st.selectbox(
-            "Hedef Kolon (tahmin edilecek sayı)",
-            num_cols if num_cols else cols,
-            index=0,
-        )
+    current_date = st.session_state.get("date_col") or (date_candidates[0] if date_candidates else cols[0])
+    try:
+        date_idx = cols.index(current_date)
+    except ValueError:
+        date_idx = 0
+    date_col = st.selectbox("Tarih Sütunu", cols, index=date_idx)
+    st.session_state["date_col"] = date_col
 
     try:
         test_dates = pd.to_datetime(df[date_col], errors="coerce")
         if test_dates.isna().all():
-            st.error("Seçtiğiniz tarih kolonu tarih formatında değil. Lütfen farklı bir kolon seçin.")
+            st.error("Seçilen kolon tarih formatında değil. Farklı bir kolon seçin.")
             st.stop()
         freq = detect_frequency(test_dates.dropna())
-        st.info(f"Algılanan veri sıklığı: **{freq_label(freq)}** (`{freq}`)")
+        st.session_state["freq"] = freq
+        st.info(f"Algılanan veri sıklığı: **{freq_label(freq)}**")
     except Exception as e:
         st.error(f"Tarih kolonu okunamadı: {e}")
         st.stop()
 
-    col_a, col_b = st.columns([1, 1])
-    with col_a:
-        if st.button("Geri", use_container_width=True):
-            st.session_state["step"] = 1
-            st.rerun()
-    with col_b:
-        if st.button("Devam Et: Veri Kalitesi", type="primary", use_container_width=True):
-            st.session_state["date_col"] = date_col
-            st.session_state["target_col"] = target_col
-            st.session_state["freq"] = freq
-            st.session_state["step"] = 3
-            st.rerun()
-
-
-elif step == 3:
-    st.markdown("## 3. Veri Kalite Analizi")
-    df = st.session_state["df_raw"]
-    date_col = st.session_state["date_col"]
-    target_col = st.session_state["target_col"]
-    if df is None or date_col is None:
-        st.warning("Önceki adımları tamamlayın.")
-        st.stop()
-
-    report = quality_check(df, date_col, target_col)
-    st.session_state["quality_report"] = report
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Satır Sayısı", report["satir_sayisi"])
-    c2.metric("Eksik Hedef", report["eksik_hedef"])
-    c3.metric("Eksik Dönem", report["eksik_donem"])
-    c4.metric("Aykırı Değer", report["aykiri_deger"])
-
-    y = report["yeterlilik"]
-    if y.startswith("Düşük"):
-        st.markdown(f'<div class="err-box"><b>Veri Yeterliliği:</b> {y}</div>', unsafe_allow_html=True)
-    elif y.startswith("Orta"):
-        st.markdown(f'<div class="warn-box"><b>Veri Yeterliliği:</b> {y}</div>', unsafe_allow_html=True)
-    else:
-        st.markdown(f'<div class="success-box"><b>Veri Yeterliliği:</b> {y}</div>', unsafe_allow_html=True)
-
-    if report["duplicate_tarih"] > 0:
-        st.warning(f"{report['duplicate_tarih']} adet tekrar eden tarih bulundu. Ortalaması alınacak.")
-    if report["eksik_donem"] > 0:
-        st.warning(f"{report['eksik_donem']} adet eksik dönem var. Otomatik doldurulacak (linear interpolation).")
-
-    series = prepare_series(df, date_col, target_col, report["freq"])
-    st.session_state["df_clean"] = series
-
-    st.markdown("### Verinizin Grafiği")
-    fig = px.line(
-        x=series.index,
-        y=series.values,
-        labels={"x": "Tarih", "y": target_col},
-        title=f"{target_col} Zaman Serisi",
+    st.markdown("#### Hedef Kolon")
+    st.caption("Tahmin etmek istediğiniz sayı kolonunu seçin (örn. Satış, Ciro, Stok).")
+    num_cols = df.select_dtypes(include="number").columns.tolist()
+    target_options = num_cols if num_cols else [c for c in cols if c != date_col]
+    current_target = st.session_state.get("target_col")
+    if current_target not in target_options:
+        current_target = target_options[0] if target_options else None
+    target_col = st.selectbox(
+        "Hedef Sütun",
+        target_options,
+        index=target_options.index(current_target) if current_target in target_options else 0,
     )
-    fig.update_traces(line_color="#667eea", line_width=2)
-    st.plotly_chart(fig, use_container_width=True)
+    st.session_state["target_col"] = target_col
 
-    col_a, col_b = st.columns([1, 1])
-    with col_a:
-        if st.button("Geri", use_container_width=True):
-            st.session_state["step"] = 2
-            st.rerun()
-    with col_b:
-        if st.button("Devam Et: Tahmin Ayarları", type="primary", use_container_width=True):
-            st.session_state["step"] = 4
-            st.rerun()
-
-
-elif step == 4:
-    st.markdown("## 4. Tahmin Ayarları")
-    if st.session_state["df_clean"] is None:
-        st.warning("Önceki adımları tamamlayın.")
-        st.stop()
-
-    freq = st.session_state["freq"]
-    fl = freq_label(freq)
-    st.markdown(
-        f'<div class="step-box">Veriniz <b>{fl}</b> olarak algılandı. '
-        f"Kaç dönem ilerisini tahmin etmek istiyorsunuz?</div>",
-        unsafe_allow_html=True,
-    )
-
+    st.markdown("#### Tahmin Ufku")
+    st.caption("Kaç dönem ileriyi tahmin etmek istediğinizi seçin.")
     defaults = {"D": 30, "W": 12, "MS": 6, "QS": 4, "YS": 3}
     horizon = st.slider(
-        "Tahmin Ufku (ileri dönem sayısı)",
+        f"İleri dönem sayısı ({freq_label(freq).lower()})",
         min_value=1,
         max_value=120,
-        value=defaults.get(freq, 12),
-        help="Örneğin aylık veride 6 = 6 ay ilerisi",
+        value=st.session_state.get("horizon") or defaults.get(freq, 12),
+        help="Örneğin aylık veride 6 = 6 ay ilerisi.",
     )
+    st.session_state["horizon"] = horizon
 
-    st.markdown("### Hangi Modeller Çalışsın?")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        use_naive = st.checkbox("Naive (Basit)", value=True, help="En son değeri tekrarlar - referans model")
-    with c2:
-        use_sarima = st.checkbox("SARIMA", value=True, help="Klasik istatistiksel model, sezonsallık yakalar")
-    with c3:
-        use_prophet = st.checkbox("Prophet", value=True, help="Facebook modeli, tatil ve trend destekler")
-    with c4:
-        use_xgb = st.checkbox("XGBoost", value=True, help="Gelişmiş makine öğrenmesi modeli")
-
-    selected = []
-    if use_naive: selected.append("Naive")
-    if use_sarima: selected.append("SARIMA")
-    if use_prophet: selected.append("Prophet")
-    if use_xgb: selected.append("XGBoost")
-
-    st.markdown("### Resmi Tatil Takvimi")
-    holidays_country = st.selectbox(
-        "Ülke seçin (Prophet modeli için)",
-        ["Yok", "TR", "US", "DE", "GB", "FR", "IT", "ES", "NL"],
-        index=1,
-        help="Resmi tatiller modele dahil edilir",
+    st.markdown("#### Resmi Tatil Takvimi")
+    st.caption("Prophet modeli için ülkeye özel resmi tatiller modele dahil edilir.")
+    holiday_options = ["Yok", "TR", "US", "DE", "GB", "FR", "IT", "ES", "NL"]
+    current_h = st.session_state.get("holidays_country") or "TR"
+    hc = st.selectbox(
+        "Ülke",
+        holiday_options,
+        index=holiday_options.index(current_h) if current_h in holiday_options else 1,
     )
-
-    st.session_state["_horizon"] = horizon
-    st.session_state["_selected_models"] = selected
-    st.session_state["_holidays"] = holidays_country
-
-    col_a, col_b = st.columns([1, 1])
-    with col_a:
-        if st.button("Geri", use_container_width=True):
-            st.session_state["step"] = 3
-            st.rerun()
-    with col_b:
-        if st.button("Modelleri Çalıştır", type="primary", use_container_width=True, disabled=not selected):
-            st.session_state["step"] = 5
-            st.rerun()
+    st.session_state["holidays_country"] = hc
 
 
-elif step == 5:
-    st.markdown("## 5. Modeller Çalışıyor...")
-    series = st.session_state["df_clean"]
-    if series is None:
-        st.warning("Veri bulunamadı.")
-        st.stop()
+with tab_train:
+    st.subheader("Model Eğitimi")
 
-    horizon = st.session_state.get("_horizon", 12)
-    selected = st.session_state.get("_selected_models", ["Naive"])
-    holidays_country = st.session_state.get("_holidays", "TR")
-    freq = st.session_state["freq"]
+    date_col = st.session_state.get("date_col")
+    target_col = st.session_state.get("target_col")
+    series = st.session_state.get("series")
 
-    with st.spinner("Modeller eğitiliyor ve tahminler üretiliyor... Bu işlem birkaç dakika sürebilir."):
-        progress = st.progress(0)
-        progress.progress(20)
-        results, test = run_all_models(series, horizon, freq, holidays_country, selected)
-        progress.progress(100)
+    if not date_col or not target_col:
+        st.info("Önce **Tahmin Tanımı** sekmesinden tarih ve hedef kolonlarını seçin.")
+    else:
+        st.markdown("#### Model Seçimi")
+        st.caption("Birden fazla model aynı veri üzerinde çalıştırılır, en düşük hatalı olan en iyi model seçilir.")
 
-    if not results:
-        st.error("Hiçbir model çalıştırılamadı. Lütfen veri boyutunu ve kütüphane kurulumunu kontrol edin.")
-        st.stop()
+        model_options = ["Naive", "SARIMA", "Prophet", "XGBoost"]
+        selected_models = st.multiselect(
+            "Denenecek modeller",
+            options=model_options,
+            default=st.session_state.get("selected_models") or model_options,
+        )
+        st.session_state["selected_models"] = selected_models
 
-    def score(m):
-        v = m["metrics"].get("MAPE", np.nan)
-        return v if not np.isnan(v) else m["metrics"].get("MAE", np.inf)
+        with st.expander("Model Açıklamaları"):
+            st.markdown(
+                "- **Naive** — En son değeri tekrarlar. Diğer modellerin kıyaslanacağı referans model.\n"
+                "- **SARIMA** — Klasik istatistiksel model; trend ve sezonsallığı yakalar.\n"
+                "- **Prophet** — Facebook tarafından geliştirilen model; resmi tatilleri, çoklu sezonsallığı destekler.\n"
+                "- **XGBoost** — Gradient boosting tabanlı makine öğrenmesi; geçmiş verilerden feature üretip öğrenir."
+            )
 
-    best = min(results.keys(), key=lambda k: score(results[k]))
-    st.session_state["forecast_results"] = results
-    st.session_state["best_model"] = best
-    st.session_state["_test_set"] = test
+        st.markdown("#### Eğitim Parametreleri")
+        info_cols = st.columns(3)
+        info_cols[0].info(f"Veri sıklığı: **{freq_label(st.session_state.get('freq'))}**")
+        info_cols[1].info(f"Tahmin ufku: **{st.session_state.get('horizon')} dönem**")
+        info_cols[2].info(f"Tatil takvimi: **{st.session_state.get('holidays_country')}**")
 
-    st.success(f"{len(results)} model başarıyla çalıştırıldı. En iyi model: **{best}**")
-    st.session_state["step"] = 6
-    st.rerun()
+        if st.button("Tahmini Başlat", type="primary", use_container_width=True):
+            if not selected_models:
+                st.warning("En az bir model seçilmelidir.")
+            elif series is None:
+                report = quality_check(df, date_col, target_col)
+                st.session_state["quality_report"] = report
+                series = prepare_series(df, date_col, target_col, report["freq"])
+                st.session_state["series"] = series
+
+            if selected_models and series is not None:
+                try:
+                    progress = st.progress(0, text="Veri hazırlanıyor...")
+                    progress.progress(25, text="Modeller eğitiliyor...")
+                    results, test = run_all_models(
+                        series,
+                        st.session_state["horizon"],
+                        st.session_state["freq"],
+                        st.session_state["holidays_country"],
+                        selected_models,
+                    )
+                    progress.progress(80, text="Metrikler hesaplanıyor...")
+
+                    if not results:
+                        st.error("Hiçbir model çalıştırılamadı.")
+                    else:
+                        def score(m):
+                            v = m["metrics"].get("MAPE", float("nan"))
+                            return v if not np.isnan(v) else m["metrics"].get("MAE", float("inf"))
+
+                        best = min(results.keys(), key=lambda k: score(results[k]))
+                        st.session_state["forecast_results"] = results
+                        st.session_state["best_model"] = best
+                        progress.progress(100, text="Tamamlandı.")
+                        st.success(
+                            f"Eğitim tamamlandı. En iyi model: **{best}**. "
+                            "**Sonuçlar** sekmesinden detaylar incelenebilir."
+                        )
+                except Exception as exc:
+                    st.error(f"Eğitim sırasında hata: {exc}")
 
 
-elif step == 6:
-    st.markdown("## 6. Tahmin Sonuçları")
+with tab_results:
+    st.subheader("Sonuçlar ve Dışa Aktarma")
+
     results = st.session_state.get("forecast_results")
     best = st.session_state.get("best_model")
-    series = st.session_state["df_clean"]
-    target_col = st.session_state["target_col"]
+    series = st.session_state.get("series")
+    target_col = st.session_state.get("target_col")
 
     if not results:
-        st.warning("Henüz model çalıştırılmadı. 5. adıma geçin.")
-        st.stop()
+        st.info("Henüz bir tahmin çalıştırılmadı. **Model Eğitimi** sekmesinden başlatılabilir.")
+    else:
+        rows = []
+        for name, info in results.items():
+            m = info["metrics"]
+            rows.append({
+                "Model": name,
+                "MAE": round(m["MAE"], 4),
+                "RMSE": round(m["RMSE"], 4),
+                "MAPE (%)": round(m["MAPE"], 2) if not np.isnan(m["MAPE"]) else None,
+            })
+        comp_df = pd.DataFrame(rows)
 
-    st.markdown("### Model Karşılaştırması")
-    rows = []
-    for name, r in results.items():
-        rows.append({
-            "Model": name + (" (en iyi)" if name == best else ""),
-            "MAE": f"{r['metrics']['MAE']:.2f}",
-            "RMSE": f"{r['metrics']['RMSE']:.2f}",
-            "MAPE (%)": f"{r['metrics']['MAPE']:.2f}" if not np.isnan(r['metrics']['MAPE']) else "-",
-        })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    st.caption("Daha düşük değer daha iyidir. MAPE hata yüzdesidir.")
+        st.markdown("#### Model Karşılaştırma")
+        st.dataframe(comp_df, use_container_width=True, hide_index=True)
+        st.success(f"En iyi model: **{best}**")
 
-    chosen = st.selectbox("Görüntülemek istediğiniz model:", list(results.keys()),
-                          index=list(results.keys()).index(best))
-    r = results[chosen]
+        with st.expander("Metrik Açıklamaları"):
+            st.markdown(
+                "- **MAE (Mean Absolute Error)** — Ortalama mutlak hata. Tahmin ve gerçek değer farklarının ortalaması.\n"
+                "- **RMSE (Root Mean Squared Error)** — Kök ortalama kare hata. Büyük hataları daha çok cezalandırır.\n"
+                "- **MAPE (%)** — Ortalama mutlak yüzde hata. Tahminin gerçek değere oranla yüzde kaç saptığını gösterir."
+            )
 
-    st.markdown(f"### {chosen} Modeli - Tahmin Grafiği")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=series.index, y=series.values, mode="lines",
-                             name="Geçmiş Veri", line=dict(color="#2c3e50", width=2)))
-    fig.add_trace(go.Scatter(x=r["forecast"].index, y=r["forecast"].values, mode="lines",
-                             name="Tahmin", line=dict(color="#e74c3c", width=3, dash="dash")))
-    if r["upper"] is not None and r["lower"] is not None:
-        fig.add_trace(go.Scatter(
-            x=list(r["upper"].index) + list(r["lower"].index[::-1]),
-            y=list(r["upper"].values) + list(r["lower"].values[::-1]),
-            fill="toself", fillcolor="rgba(231,76,60,0.15)",
-            line=dict(color="rgba(255,255,255,0)"), name="Güven Aralığı (%95)",
-        ))
-    fig.update_layout(
-        xaxis_title="Tarih", yaxis_title=target_col,
-        hovermode="x unified", height=500,
-        legend=dict(orientation="h", y=1.1),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("### Tahmin Değerleri")
-    forecast_df = pd.DataFrame({
-        "Tarih": r["forecast"].index,
-        "Tahmin": r["forecast"].values.round(2),
-        "Alt Sınır": r["lower"].values.round(2) if r["lower"] is not None else np.nan,
-        "Üst Sınır": r["upper"].values.round(2) if r["upper"] is not None else np.nan,
-    })
-    st.dataframe(forecast_df, use_container_width=True, hide_index=True)
-
-    st.markdown("### What-If Senaryo Simülasyonu")
-    st.caption("Tahmini belli bir oran ile artırıp/azaltarak farklı senaryoları inceleyin.")
-    change_pct = st.slider("Senaryo etkisi (%)", -50, 50, 0, step=5)
-    if change_pct != 0:
-        scen = r["forecast"] * (1 + change_pct / 100)
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=series.index, y=series.values, name="Geçmiş", line=dict(color="#2c3e50")))
-        fig2.add_trace(go.Scatter(x=r["forecast"].index, y=r["forecast"].values, name="Baz Tahmin", line=dict(color="#3498db", dash="dash")))
-        fig2.add_trace(go.Scatter(x=scen.index, y=scen.values, name=f"Senaryo (%{change_pct:+d})", line=dict(color="#e67e22", width=3)))
-        fig2.update_layout(height=400, hovermode="x unified", xaxis_title="Tarih", yaxis_title=target_col)
-        st.plotly_chart(fig2, use_container_width=True)
-
-    st.markdown("### Sonuçları İndir")
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as w:
-        forecast_df.to_excel(w, sheet_name="Tahmin Sonuclari", index=False)
-        metrics_df = pd.DataFrame([
-            {"Model": n, **rr["metrics"]} for n, rr in results.items()
-        ])
-        metrics_df.to_excel(w, sheet_name="Model Metrikleri", index=False)
-        qr = st.session_state.get("quality_report") or {}
-        pd.DataFrame([qr]).T.reset_index().rename(columns={"index": "Metrik", 0: "Değer"}).to_excel(
-            w, sheet_name="Veri Kalite Raporu", index=False
+        st.markdown("#### Model Detayları")
+        model_names = list(results.keys())
+        chosen = st.selectbox(
+            "Detayı görüntülenecek model",
+            model_names,
+            index=model_names.index(best),
         )
-        summary = pd.DataFrame([{
-            "En İyi Model": best,
-            "Tahmin Ufku": len(r["forecast"]),
-            "Veri Sıklığı": freq_label(st.session_state["freq"]),
-            "Toplam Geçmiş Satır": len(series),
-            "Ortalama Tahmin": round(r["forecast"].mean(), 2),
-        }])
-        summary.to_excel(w, sheet_name="Ozet", index=False)
+        r = results[chosen]
 
-    st.download_button(
-        "Excel olarak indir",
-        buffer.getvalue(),
-        file_name="forecast_sonuclari.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        type="primary",
-    )
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=series.index, y=series.values, mode="lines",
+            name="Geçmiş Veri", line=dict(color="#2c3e50", width=2),
+        ))
+        fig.add_trace(go.Scatter(
+            x=r["forecast"].index, y=r["forecast"].values, mode="lines",
+            name="Tahmin", line=dict(color="#e74c3c", width=3, dash="dash"),
+        ))
+        if r["upper"] is not None and r["lower"] is not None:
+            fig.add_trace(go.Scatter(
+                x=list(r["upper"].index) + list(r["lower"].index[::-1]),
+                y=list(r["upper"].values) + list(r["lower"].values[::-1]),
+                fill="toself", fillcolor="rgba(231,76,60,0.15)",
+                line=dict(color="rgba(255,255,255,0)"),
+                name="Güven Aralığı (%95)",
+            ))
+        fig.update_layout(
+            xaxis_title="Tarih", yaxis_title=target_col,
+            hovermode="x unified", height=480,
+            legend=dict(orientation="h", y=1.1),
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-    col_a, col_b = st.columns([1, 1])
-    with col_a:
-        if st.button("Yeni Ayarlar", use_container_width=True):
-            st.session_state["step"] = 4
-            st.rerun()
-    with col_b:
-        if st.button("Yeni Tahmin", use_container_width=True):
-            for k in list(st.session_state.keys()):
-                del st.session_state[k]
-            st.rerun()
+        st.markdown("#### Tahmin Tablosu")
+        forecast_df = pd.DataFrame({
+            "Tarih": r["forecast"].index,
+            "Tahmin": r["forecast"].values.round(2),
+            "Alt Sınır": r["lower"].values.round(2) if r["lower"] is not None else np.nan,
+            "Üst Sınır": r["upper"].values.round(2) if r["upper"] is not None else np.nan,
+        })
+        st.dataframe(forecast_df, use_container_width=True, hide_index=True)
 
+        st.markdown("#### What-If Senaryo Simülasyonu")
+        st.caption("Tahmini belli bir oranla artırıp/azaltarak farklı senaryoları inceleyin.")
+        change_pct = st.slider("Senaryo etkisi (%)", -50, 50, 0, step=5)
+        if change_pct != 0:
+            scen = r["forecast"] * (1 + change_pct / 100)
+            fig2 = go.Figure()
+            fig2.add_trace(go.Scatter(x=series.index, y=series.values, name="Geçmiş", line=dict(color="#2c3e50")))
+            fig2.add_trace(go.Scatter(
+                x=r["forecast"].index, y=r["forecast"].values,
+                name="Baz Tahmin", line=dict(color="#3498db", dash="dash"),
+            ))
+            fig2.add_trace(go.Scatter(
+                x=scen.index, y=scen.values,
+                name=f"Senaryo (%{change_pct:+d})", line=dict(color="#e67e22", width=3),
+            ))
+            fig2.update_layout(height=380, hovermode="x unified", xaxis_title="Tarih", yaxis_title=target_col)
+            st.plotly_chart(fig2, use_container_width=True)
 
-st.markdown("---")
-st.caption("AI Hub - Forecasting Agent | Streamlit Cloud Versiyonu")
+        st.markdown("#### Dışa Aktarma")
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as w:
+            forecast_df.to_excel(w, sheet_name="Tahmin Sonuclari", index=False)
+            comp_df.to_excel(w, sheet_name="Model Karsilastirma", index=False)
+            qr = st.session_state.get("quality_report") or {}
+            if qr:
+                pd.DataFrame([qr]).T.reset_index().rename(
+                    columns={"index": "Metrik", 0: "Değer"}
+                ).to_excel(w, sheet_name="Veri Kalite Raporu", index=False)
+            summary = pd.DataFrame([{
+                "Zaman Damgasi": datetime.now().isoformat(timespec="seconds"),
+                "En Iyi Model": best,
+                "Tahmin Ufku": len(r["forecast"]),
+                "Veri Sikligi": freq_label(st.session_state["freq"]),
+                "Toplam Gecmis Satir": len(series),
+                "Ortalama Tahmin": round(float(r["forecast"].mean()), 2),
+                "Min Tahmin": round(float(r["forecast"].min()), 2),
+                "Max Tahmin": round(float(r["forecast"].max()), 2),
+            }])
+            summary.to_excel(w, sheet_name="Ozet", index=False)
+
+        st.download_button(
+            "Sonuçları Excel olarak indir",
+            data=buffer.getvalue(),
+            file_name=f"forecast_sonuclari_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
