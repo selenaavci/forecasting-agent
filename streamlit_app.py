@@ -59,18 +59,37 @@ for _key, _value in _DEFAULTS.items():
     st.session_state.setdefault(_key, _value)
 
 
+def _dedupe_columns(df):
+    """Yinelenen kolon isimlerini _1, _2 ekleyerek benzersizlestirir."""
+    cols = list(df.columns)
+    seen = {}
+    new_cols = []
+    for c in cols:
+        c_str = str(c)
+        if c_str in seen:
+            seen[c_str] += 1
+            new_cols.append(f"{c_str}_{seen[c_str]}")
+        else:
+            seen[c_str] = 0
+            new_cols.append(c_str)
+    df.columns = new_cols
+    return df
+
+
 @st.cache_data(show_spinner=False)
 def load_dataframe(uploaded_file):
     name = uploaded_file.name.lower()
     if name.endswith(".csv"):
         try:
-            return pd.read_csv(uploaded_file)
+            df = pd.read_csv(uploaded_file)
         except Exception:
             uploaded_file.seek(0)
-            return pd.read_csv(uploaded_file, sep=";")
-    if name.endswith((".xlsx", ".xls")):
-        return pd.read_excel(uploaded_file)
-    return None
+            df = pd.read_csv(uploaded_file, sep=";")
+    elif name.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(uploaded_file)
+    else:
+        return None
+    return _dedupe_columns(df)
 
 
 def detect_frequency(dates):
@@ -99,15 +118,26 @@ def freq_label(f):
     }.get(f, "Bilinmeyen")
 
 
+def _column_as_series(df, col):
+    """Return a 1-D Series for col, even if df has duplicate column names."""
+    obj = df[col]
+    if isinstance(obj, pd.DataFrame):
+        obj = obj.iloc[:, 0]
+    return obj
+
+
 def quality_check(df, date_col, target_col):
     report = {}
     n = len(df)
-    report["satir_sayisi"] = n
-    report["eksik_hedef"] = int(df[target_col].isna().sum())
-    report["eksik_tarih"] = int(df[date_col].isna().sum())
-    report["duplicate_tarih"] = int(df[date_col].duplicated().sum())
+    date_series = _column_as_series(df, date_col)
+    target_series = _column_as_series(df, target_col)
 
-    dates = pd.to_datetime(df[date_col], errors="coerce").dropna().sort_values()
+    report["satir_sayisi"] = n
+    report["eksik_hedef"] = int(target_series.isna().sum())
+    report["eksik_tarih"] = int(date_series.isna().sum())
+    report["duplicate_tarih"] = int(date_series.duplicated().sum())
+
+    dates = pd.to_datetime(date_series, errors="coerce").dropna().sort_values()
     if len(dates) >= 2:
         freq = detect_frequency(dates)
         expected = pd.date_range(dates.min(), dates.max(), freq=freq)
@@ -119,7 +149,7 @@ def quality_check(df, date_col, target_col):
         report["eksik_donem"] = 0
         report["freq"] = "D"
 
-    series = pd.to_numeric(df[target_col], errors="coerce").dropna()
+    series = pd.to_numeric(target_series, errors="coerce").dropna()
     if len(series) > 10:
         q1, q3 = series.quantile([0.25, 0.75])
         iqr = q3 - q1
@@ -141,15 +171,15 @@ def quality_check(df, date_col, target_col):
 
 
 def prepare_series(df, date_col, target_col, freq):
-    s = df[[date_col, target_col]].copy()
-    s[date_col] = pd.to_datetime(s[date_col], errors="coerce")
-    s = s.dropna(subset=[date_col])
-    s[target_col] = pd.to_numeric(s[target_col], errors="coerce")
-    s = s.groupby(date_col, as_index=False)[target_col].mean()
-    s = s.sort_values(date_col).set_index(date_col)
+    date_series = pd.to_datetime(_column_as_series(df, date_col), errors="coerce")
+    target_series = pd.to_numeric(_column_as_series(df, target_col), errors="coerce")
+    s = pd.DataFrame({"__date__": date_series.values, "__value__": target_series.values})
+    s = s.dropna(subset=["__date__"])
+    s = s.groupby("__date__", as_index=False)["__value__"].mean()
+    s = s.sort_values("__date__").set_index("__date__")
     s = s.asfreq(freq)
-    s[target_col] = s[target_col].interpolate(method="linear").bfill().ffill()
-    return s[target_col]
+    s["__value__"] = s["__value__"].interpolate(method="linear").bfill().ffill()
+    return s["__value__"]
 
 
 def make_features(series):
@@ -511,7 +541,7 @@ with tab_setup:
     st.session_state["date_col"] = date_col
 
     try:
-        test_dates = pd.to_datetime(df[date_col], errors="coerce")
+        test_dates = pd.to_datetime(_column_as_series(df, date_col), errors="coerce")
         if test_dates.isna().all():
             st.error("Seçilen kolon tarih formatında değil. Farklı bir kolon seçin.")
             st.stop()
@@ -524,15 +554,18 @@ with tab_setup:
 
     st.markdown("#### Hedef Kolon")
     st.caption("Tahmin etmek istediğiniz sayı kolonunu seçin (örn. Satış, Ciro, Stok).")
-    num_cols = df.select_dtypes(include="number").columns.tolist()
+    num_cols = [c for c in df.select_dtypes(include="number").columns.tolist() if c != date_col]
     target_options = num_cols if num_cols else [c for c in cols if c != date_col]
+    if not target_options:
+        st.error("Tahmin edilebilecek numerik kolon bulunamadı.")
+        st.stop()
     current_target = st.session_state.get("target_col")
     if current_target not in target_options:
-        current_target = target_options[0] if target_options else None
+        current_target = target_options[0]
     target_col = st.selectbox(
         "Hedef Sütun",
         target_options,
-        index=target_options.index(current_target) if current_target in target_options else 0,
+        index=target_options.index(current_target),
     )
     st.session_state["target_col"] = target_col
 
