@@ -3,17 +3,20 @@ Overview
 Forecasting Agent, kullanıcıların kendi veri setleri üzerinden zaman serisi tahminleri (time series forecasting) yapabilmesini sağlayan, teknik bilgi gerektirmeyen, uçtan uca bir tahminleme çözümüdür.
 Bu agent; veri yükleme, otomatik veri analizi, çoklu model karşılaştırması, tahmin üretimi ve sonuçların görselleştirilmesi süreçlerini tek bir arayüz üzerinden yönetir.
 AI Hub içerisinde, veri odaklı karar alma süreçlerini hızlandırmak ve iş birimlerini self-service AI ile güçlendirmek amacıyla geliştirilmiştir.
+
 🎯 Project Purpose
 Kullanıcıların geçmiş verilerden geleceğe yönelik tahminler üretmesini sağlamak
 Tahmin süreçlerini teknik ekip bağımlılığı olmadan erişilebilir hale getirmek
 Farklı forecasting modellerini otomatik olarak karşılaştırmak
 Belirsizlik aralıkları ile birlikte güvenilir tahminler sunmak
 İş kararlarını veri odaklı hale getirmek
+
 👤 Target Users
 İş birimleri (satış, pazarlama, operasyon, finans)
 Veri analistleri
 Teknik olmayan kullanıcılar
 Karar vericiler
+
 ⚙️ Core Capabilities
 1. Data Upload
 CSV / XLSX veri yükleme desteği
@@ -50,6 +53,7 @@ En iyi model otomatik olarak seçilir.
 Gelecek dönem tahminleri
 Confidence interval (alt-üst bant)
 Actual vs Forecast grafikleri
+
 🧠 Advanced Forecasting Features (Phase 2 Included)
 📅 Holiday Calendar Integration
 Ülkeye özel resmi tatiller otomatik olarak modele dahil edilir
@@ -84,12 +88,14 @@ Forecast grafikleri (actual vs predicted)
 Confidence interval görselleştirmesi
 Model karşılaştırma tablosu
 Trend & seasonality analizi
+
 📁 Export Options
 Excel çıktısı aşağıdaki sheet’leri içerir:
 Forecast Results
 Model Metrics
 Data Quality Report
 Forecast Summary
+
 🖥️ UI Flow
 Veri yükleme (CSV/XLSX)
 Tarih ve hedef kolon seçimi
@@ -101,12 +107,14 @@ Grafikler
 Model karşılaştırma
 Tahmin çıktıları
 Excel export
+
 ⚠️ Limitations & Considerations
 Veri çok kısa ise tahmin güvenilirliği düşer
 Ani kırılmalar (kampanya, kriz vb.) modeli yanıltabilir
 Uzun vadeli forecastlarda hata payı artar
 Eksik veya düzensiz veri sonuçları etkiler
 Agent gerektiğinde kullanıcıyı bu riskler hakkında uyarır
+
 🚀 Future Improvements
 LLM destekli forecast yorumlama
 Otomatik anomaly düzeltme
@@ -114,11 +122,13 @@ Real-time forecasting
 API entegrasyonu
 Dashboard entegrasyonu
 Auto retraining pipeline
+
 🧩 AI Hub Integration
 Forecasting Agent, AI Hub içerisindeki diğer agentlar ile entegre çalışabilir:
 Data Quality Agent → veri temizliği
 Feature Engineering Agent → feature üretimi
 Anomaly Detection Agent → anomali analizi
 Bu yapı ile uçtan uca bir veri işleme ve tahmin pipeline’ı oluşturulabilir.
+
 🏁 Conclusion
 Forecasting Agent, sadece tahmin yapan bir araç değil; veri analizi, modelleme, senaryo simülasyonu ve karar destek süreçlerini bir araya getiren kapsamlı bir AI çözümüdür. Kurum içinde veri odaklı karar alma süreçlerini hızlandırır ve teknik olmayan kullanıcıların da ileri seviye analizler yapabilmesini sağlar.
