@@ -816,11 +816,27 @@ with tab_results:
 
         scenario_forecast = r["forecast"].copy().astype(float)
 
-        for scen in st.session_state["scenarios"]:
+        SCEN_PALETTE = [
+            "#e67e22", "#9b59b6", "#16a085", "#c0392b",
+            "#2980b9", "#f1c40f", "#1abc9c", "#d35400",
+        ]
+
+        per_scen_lines = []
+        for i, scen in enumerate(st.session_state["scenarios"]):
             start = pd.Timestamp(scen["baslangic"])
             end = pd.Timestamp(scen["bitis"])
             mask = (scenario_forecast.index >= start) & (scenario_forecast.index <= end)
             scenario_forecast.loc[mask] *= 1 + scen["etki"] / 100
+
+            only_this = r["forecast"].copy().astype(float)
+            only_this.loc[mask] *= 1 + scen["etki"] / 100
+            per_scen_lines.append({
+                "scen": scen,
+                "line": only_this,
+                "mask": mask,
+                "color": SCEN_PALETTE[i % len(SCEN_PALETTE)],
+                "label": f"{scen['ad']} ({scen['etki']:+d}%)",
+            })
 
         if flat_pct != 0:
             scenario_forecast *= 1 + flat_pct / 100
@@ -828,6 +844,27 @@ with tab_results:
         if trend_pct != 0 and len(scenario_forecast) > 0:
             multipliers = np.linspace(1.0, 1 + trend_pct / 100, len(scenario_forecast))
             scenario_forecast = scenario_forecast * multipliers
+
+        breakdown_df = None
+        if per_scen_lines:
+            breakdown_rows = []
+            for ps in per_scen_lines:
+                m = ps["mask"]
+                bz = float(r["forecast"].loc[m].sum())
+                sn = float(ps["line"].loc[m].sum())
+                fk = sn - bz
+                fk_pct = (fk / bz * 100) if bz else 0.0
+                breakdown_rows.append({
+                    "Ad": ps["scen"]["ad"],
+                    "Başlangıç": ps["scen"]["baslangic"],
+                    "Bitiş": ps["scen"]["bitis"],
+                    "Etki (%)": ps["scen"]["etki"],
+                    "Pencere İçi Baz Toplam": round(bz, 2),
+                    "Pencere İçi Senaryolu Toplam": round(sn, 2),
+                    "Δ": round(fk, 2),
+                    "Δ (%)": round(fk_pct, 2),
+                })
+            breakdown_df = pd.DataFrame(breakdown_rows)
 
         has_scenario = (
             len(st.session_state["scenarios"]) > 0 or flat_pct != 0 or trend_pct != 0
@@ -843,16 +880,27 @@ with tab_results:
                 x=r["forecast"].index, y=r["forecast"].values,
                 name="Baz Tahmin", line=dict(color="#3498db", width=2, dash="dash"),
             ))
-            fig2.add_trace(go.Scatter(
-                x=scenario_forecast.index, y=scenario_forecast.values,
-                name="Senaryolu Tahmin", line=dict(color="#e67e22", width=3),
-            ))
-            for scen in st.session_state["scenarios"]:
+            for ps in per_scen_lines:
+                fig2.add_trace(go.Scatter(
+                    x=ps["line"].index, y=ps["line"].values,
+                    name=ps["label"],
+                    line=dict(color=ps["color"], width=2, dash="dot"),
+                ))
+            show_combined = (
+                len(per_scen_lines) >= 2 or flat_pct != 0 or trend_pct != 0
+            )
+            if show_combined:
+                fig2.add_trace(go.Scatter(
+                    x=scenario_forecast.index, y=scenario_forecast.values,
+                    name="Senaryolu Tahmin (Tümü)",
+                    line=dict(color="#e67e22", width=3),
+                ))
+            for ps in per_scen_lines:
                 fig2.add_vrect(
-                    x0=pd.Timestamp(scen["baslangic"]),
-                    x1=pd.Timestamp(scen["bitis"]),
-                    fillcolor="#e67e22", opacity=0.12, line_width=0,
-                    annotation_text=scen["ad"], annotation_position="top left",
+                    x0=pd.Timestamp(ps["scen"]["baslangic"]),
+                    x1=pd.Timestamp(ps["scen"]["bitis"]),
+                    fillcolor=ps["color"], opacity=0.10, line_width=0,
+                    annotation_text=ps["scen"]["ad"], annotation_position="top left",
                 )
             fig2.update_layout(
                 height=420, hovermode="x unified",
@@ -860,6 +908,10 @@ with tab_results:
                 legend=dict(orientation="h", y=1.1),
             )
             st.plotly_chart(fig2, use_container_width=True)
+
+            if breakdown_df is not None:
+                st.markdown("##### Kampanya Bazlı Etki")
+                st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
 
             baz_toplam = float(r["forecast"].sum())
             senaryo_toplam = float(scenario_forecast.sum())
@@ -890,10 +942,25 @@ with tab_results:
                 scen_export = pd.DataFrame({
                     "Tarih": scenario_forecast.index,
                     "Baz Tahmin": r["forecast"].values.round(2),
-                    "Senaryolu Tahmin": scenario_forecast.values.round(2),
-                    "Fark": (scenario_forecast.values - r["forecast"].values).round(2),
                 })
+                used_labels = set()
+                for ps in per_scen_lines:
+                    label = ps["label"]
+                    suffix = 1
+                    while label in used_labels:
+                        suffix += 1
+                        label = f"{ps['label']} #{suffix}"
+                    used_labels.add(label)
+                    scen_export[label] = ps["line"].values.round(2)
+                scen_export["Senaryolu Tahmin (Tumu)"] = scenario_forecast.values.round(2)
+                scen_export["Fark"] = (
+                    scenario_forecast.values - r["forecast"].values
+                ).round(2)
                 scen_export.to_excel(w, sheet_name="Senaryo Tahminleri", index=False)
+                if breakdown_df is not None:
+                    breakdown_df.to_excel(
+                        w, sheet_name="Kampanya Bazli Etki", index=False
+                    )
                 if st.session_state["scenarios"]:
                     pd.DataFrame(st.session_state["scenarios"]).to_excel(
                         w, sheet_name="Senaryo Tanimlari", index=False
